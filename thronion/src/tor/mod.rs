@@ -61,12 +61,16 @@ pub enum TorCellType {
 /// Tor control port interface
 pub struct TorInterface {
     control_port: u16,
+    authenticated: bool,
 }
 
 impl TorInterface {
     /// Create new Tor interface
     pub fn new(control_port: u16) -> Self {
-        Self { control_port }
+        Self {
+            control_port,
+            authenticated: false,
+        }
     }
 
     /// Connect to Tor control port
@@ -74,6 +78,19 @@ impl TorInterface {
         tracing::info!("Connecting to Tor control port: {}", self.control_port);
         // TODO: Implement actual Tor control port connection with cookie auth
         Ok(())
+    }
+
+    /// Authenticate with Tor control port using cookie
+    pub async fn authenticate(&mut self, cookie_path: &str) -> Result<()> {
+        tracing::info!("Authenticating with Tor using cookie: {}", cookie_path);
+        // TODO: Read cookie file and send AUTHENTICATE command
+        self.authenticated = true;
+        Ok(())
+    }
+
+    /// Check if authenticated
+    pub fn is_authenticated(&self) -> bool {
+        self.authenticated
     }
 
     /// Subscribe to circuit events
@@ -95,6 +112,183 @@ impl TorInterface {
             rendezvous_completed: false,
             total_bytes: 0,
         })
+    }
+}
+
+/// Tor circuit event types
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CircuitEvent {
+    /// Circuit launched
+    Launched { circuit_id: u32 },
+    /// Circuit extended
+    Extended { circuit_id: u32, hop_count: usize },
+    /// Circuit built (ready to use)
+    Built { circuit_id: u32 },
+    /// Circuit failed
+    Failed { circuit_id: u32, reason: String },
+    /// Circuit closed
+    Closed { circuit_id: u32, reason: String },
+}
+
+/// Event processor for handling Tor events
+pub struct EventProcessor {
+    monitor: Arc<CircuitMonitor>,
+}
+
+impl EventProcessor {
+    /// Create new event processor
+    pub fn new(monitor: Arc<CircuitMonitor>) -> Self {
+        Self { monitor }
+    }
+
+    /// Process circuit event
+    pub fn process_event(&self, event: CircuitEvent) {
+        match event {
+            CircuitEvent::Launched { circuit_id } => {
+                tracing::debug!("Circuit {} launched", circuit_id);
+                let metadata = TorCircuitMetadata {
+                    circuit_id,
+                    created_at: Instant::now(),
+                    cell_timings: vec![],
+                    cell_types: vec![],
+                    introduction_point: None,
+                    rendezvous_completed: false,
+                    total_bytes: 0,
+                };
+                self.monitor.track_circuit(metadata);
+            }
+            CircuitEvent::Built { circuit_id } => {
+                tracing::debug!("Circuit {} built", circuit_id);
+                if let Some(mut metadata) = self.monitor.get_circuit(circuit_id) {
+                    metadata.rendezvous_completed = true;
+                    self.monitor.track_circuit(metadata);
+                }
+            }
+            CircuitEvent::Failed { circuit_id, reason } | CircuitEvent::Closed { circuit_id, reason } => {
+                tracing::debug!("Circuit {} closed/failed: {}", circuit_id, reason);
+                self.monitor.remove_circuit(circuit_id);
+            }
+            CircuitEvent::Extended { circuit_id, hop_count } => {
+                tracing::trace!("Circuit {} extended to {} hops", circuit_id, hop_count);
+            }
+        }
+    }
+}
+
+/// Metadata extraction utilities
+pub struct MetadataExtractor;
+
+impl MetadataExtractor {
+    /// Extract timing features from cell sequence
+    pub fn extract_timing_features(cell_timings: &[Duration]) -> TimingFeatures {
+        if cell_timings.is_empty() {
+            return TimingFeatures::default();
+        }
+
+        let mut intervals: Vec<f64> = cell_timings
+            .windows(2)
+            .map(|w| (w[1].as_micros() as i128 - w[0].as_micros() as i128).abs() as f64)
+            .collect();
+
+        if intervals.is_empty() {
+            return TimingFeatures::default();
+        }
+
+        intervals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let mean = intervals.iter().sum::<f64>() / intervals.len() as f64;
+        let variance = intervals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / intervals.len() as f64;
+        let std_dev = variance.sqrt();
+
+        let median = if intervals.len() % 2 == 0 {
+            (intervals[intervals.len() / 2 - 1] + intervals[intervals.len() / 2]) / 2.0
+        } else {
+            intervals[intervals.len() / 2]
+        };
+
+        TimingFeatures {
+            mean_interval: mean,
+            std_dev_interval: std_dev,
+            median_interval: median,
+            min_interval: intervals[0],
+            max_interval: intervals[intervals.len() - 1],
+        }
+    }
+
+    /// Analyze cell type distribution
+    pub fn analyze_cell_types(cell_types: &[TorCellType]) -> CellTypeDistribution {
+        let total = cell_types.len();
+        if total == 0 {
+            return CellTypeDistribution::default();
+        }
+
+        let mut intro_count = 0;
+        let mut rendezvous_count = 0;
+        let mut data_count = 0;
+        let mut padding_count = 0;
+        let mut other_count = 0;
+
+        for cell_type in cell_types {
+            match cell_type {
+                TorCellType::Introduce2 => intro_count += 1,
+                TorCellType::Rendezvous1 | TorCellType::Rendezvous2 => rendezvous_count += 1,
+                TorCellType::Data => data_count += 1,
+                TorCellType::Padding => padding_count += 1,
+                TorCellType::Other => other_count += 1,
+            }
+        }
+
+        CellTypeDistribution {
+            intro_ratio: intro_count as f64 / total as f64,
+            rendezvous_ratio: rendezvous_count as f64 / total as f64,
+            data_ratio: data_count as f64 / total as f64,
+            padding_ratio: padding_count as f64 / total as f64,
+            other_ratio: other_count as f64 / total as f64,
+        }
+    }
+}
+
+/// Timing features extracted from cell sequence
+#[derive(Debug, Clone)]
+pub struct TimingFeatures {
+    pub mean_interval: f64,
+    pub std_dev_interval: f64,
+    pub median_interval: f64,
+    pub min_interval: f64,
+    pub max_interval: f64,
+}
+
+impl Default for TimingFeatures {
+    fn default() -> Self {
+        Self {
+            mean_interval: 0.0,
+            std_dev_interval: 0.0,
+            median_interval: 0.0,
+            min_interval: 0.0,
+            max_interval: 0.0,
+        }
+    }
+}
+
+/// Cell type distribution features
+#[derive(Debug, Clone)]
+pub struct CellTypeDistribution {
+    pub intro_ratio: f64,
+    pub rendezvous_ratio: f64,
+    pub data_ratio: f64,
+    pub padding_ratio: f64,
+    pub other_ratio: f64,
+}
+
+impl Default for CellTypeDistribution {
+    fn default() -> Self {
+        Self {
+            intro_ratio: 0.0,
+            rendezvous_ratio: 0.0,
+            data_ratio: 0.0,
+            padding_ratio: 0.0,
+            other_ratio: 0.0,
+        }
     }
 }
 
@@ -156,7 +350,7 @@ mod tests {
     #[test]
     fn test_circuit_tracking() {
         let monitor = CircuitMonitor::new(10);
-        
+
         let metadata = TorCircuitMetadata {
             circuit_id: 1,
             created_at: Instant::now(),
@@ -166,10 +360,10 @@ mod tests {
             rendezvous_completed: false,
             total_bytes: 0,
         };
-        
+
         monitor.track_circuit(metadata);
         assert_eq!(monitor.circuit_count(), 1);
-        
+
         let retrieved = monitor.get_circuit(1);
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().circuit_id, 1);
@@ -178,7 +372,7 @@ mod tests {
     #[test]
     fn test_circuit_eviction() {
         let monitor = CircuitMonitor::new(2);
-        
+
         // Add 3 circuits to a monitor with capacity 2
         for i in 1..=3 {
             let metadata = TorCircuitMetadata {
@@ -192,8 +386,93 @@ mod tests {
             };
             monitor.track_circuit(metadata);
         }
-        
+
         // Should only have 2 circuits
         assert_eq!(monitor.circuit_count(), 2);
+    }
+
+    #[test]
+    fn test_tor_interface_authentication() {
+        let mut interface = TorInterface::new(9051);
+        assert!(!interface.is_authenticated());
+        // Note: actual authentication requires async runtime
+    }
+
+    #[test]
+    fn test_event_processor() {
+        let monitor = Arc::new(CircuitMonitor::new(100));
+        let processor = EventProcessor::new(monitor.clone());
+
+        // Process launch event
+        processor.process_event(CircuitEvent::Launched { circuit_id: 1 });
+        assert_eq!(monitor.circuit_count(), 1);
+
+        // Process close event
+        processor.process_event(CircuitEvent::Closed {
+            circuit_id: 1,
+            reason: "test".to_string(),
+        });
+        assert_eq!(monitor.circuit_count(), 0);
+    }
+
+    #[test]
+    fn test_timing_features_extraction() {
+        let timings = vec![
+            Duration::from_micros(100),
+            Duration::from_micros(150),
+            Duration::from_micros(120),
+            Duration::from_micros(180),
+        ];
+
+        let features = MetadataExtractor::extract_timing_features(&timings);
+        assert!(features.mean_interval > 0.0);
+        assert!(features.std_dev_interval >= 0.0);
+        assert!(features.min_interval >= 0.0);
+        assert!(features.max_interval >= features.min_interval);
+    }
+
+    #[test]
+    fn test_timing_features_empty() {
+        let timings: Vec<Duration> = vec![];
+        let features = MetadataExtractor::extract_timing_features(&timings);
+        assert_eq!(features.mean_interval, 0.0);
+    }
+
+    #[test]
+    fn test_cell_type_distribution() {
+        let cell_types = vec![
+            TorCellType::Data,
+            TorCellType::Data,
+            TorCellType::Introduce2,
+            TorCellType::Padding,
+            TorCellType::Data,
+        ];
+
+        let dist = MetadataExtractor::analyze_cell_types(&cell_types);
+        assert_eq!(dist.data_ratio, 0.6); // 3/5
+        assert_eq!(dist.intro_ratio, 0.2); // 1/5
+        assert_eq!(dist.padding_ratio, 0.2); // 1/5
+        assert_eq!(dist.rendezvous_ratio, 0.0);
+    }
+
+    #[test]
+    fn test_cell_type_distribution_empty() {
+        let cell_types: Vec<TorCellType> = vec![];
+        let dist = MetadataExtractor::analyze_cell_types(&cell_types);
+        assert_eq!(dist.data_ratio, 0.0);
+    }
+
+    #[test]
+    fn test_circuit_event_types() {
+        let event1 = CircuitEvent::Launched { circuit_id: 1 };
+        let event2 = CircuitEvent::Built { circuit_id: 1 };
+        let event3 = CircuitEvent::Failed {
+            circuit_id: 1,
+            reason: "timeout".to_string(),
+        };
+
+        assert!(matches!(event1, CircuitEvent::Launched { .. }));
+        assert!(matches!(event2, CircuitEvent::Built { .. }));
+        assert!(matches!(event3, CircuitEvent::Failed { .. }));
     }
 }
