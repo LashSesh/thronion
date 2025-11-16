@@ -59,8 +59,10 @@ pub mod operators;
 pub mod resonance;
 pub mod utils;
 
-// Thronion-specific modules (to be implemented)
-// pub mod tor;
+// Thronion-specific modules
+pub mod tor;
+
+// To be implemented in future phases
 // pub mod thronion;
 // pub mod service;
 
