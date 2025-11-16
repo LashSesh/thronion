@@ -16,11 +16,14 @@
 //!
 //! Ported from Ophanion with enhancements for Thronion fusion.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::{broadcast, mpsc};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 
 /// Tor circuit metadata extracted from control port
 #[derive(Debug, Clone)]
@@ -62,6 +65,7 @@ pub enum TorCellType {
 pub struct TorInterface {
     control_port: u16,
     authenticated: bool,
+    event_tx: Option<broadcast::Sender<CircuitEvent>>,
 }
 
 impl TorInterface {
@@ -70,22 +74,48 @@ impl TorInterface {
         Self {
             control_port,
             authenticated: false,
+            event_tx: None,
         }
     }
 
-    /// Connect to Tor control port
-    pub async fn connect(&self) -> Result<()> {
+    /// Connect to Tor control port and establish TCP connection
+    pub async fn connect(&mut self) -> Result<TcpStream> {
         tracing::info!("Connecting to Tor control port: {}", self.control_port);
-        // TODO: Implement actual Tor control port connection with cookie auth
-        Ok(())
+        let stream = TcpStream::connect(("127.0.0.1", self.control_port))
+            .await
+            .context("Failed to connect to Tor control port")?;
+        Ok(stream)
     }
 
     /// Authenticate with Tor control port using cookie
-    pub async fn authenticate(&mut self, cookie_path: &str) -> Result<()> {
+    pub async fn authenticate(&mut self, stream: &mut TcpStream, cookie_path: &str) -> Result<()> {
         tracing::info!("Authenticating with Tor using cookie: {}", cookie_path);
-        // TODO: Read cookie file and send AUTHENTICATE command
-        self.authenticated = true;
-        Ok(())
+        
+        // Read cookie file
+        let cookie_data = tokio::fs::read(cookie_path)
+            .await
+            .context("Failed to read Tor authentication cookie")?;
+        
+        // Convert to hex
+        let hex_cookie = hex::encode(&cookie_data);
+        
+        // Send AUTHENTICATE command
+        let cmd = format!("AUTHENTICATE {}\r\n", hex_cookie);
+        stream.write_all(cmd.as_bytes()).await?;
+        stream.flush().await?;
+        
+        // Read response
+        let mut reader = BufReader::new(stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).await?;
+        
+        if response.starts_with("250") {
+            self.authenticated = true;
+            tracing::info!("Successfully authenticated with Tor");
+            Ok(())
+        } else {
+            anyhow::bail!("Authentication failed: {}", response)
+        }
     }
 
     /// Check if authenticated
@@ -93,16 +123,102 @@ impl TorInterface {
         self.authenticated
     }
 
-    /// Subscribe to circuit events
-    pub async fn monitor_circuits(&self) -> Result<()> {
-        tracing::info!("Monitoring Tor circuits...");
-        // TODO: Implement SETEVENTS CIRC, CIRC_MINOR
+    /// Subscribe to circuit events and start event stream
+    pub async fn monitor_circuits(&mut self, stream: &mut TcpStream) -> Result<broadcast::Receiver<CircuitEvent>> {
+        tracing::info!("Subscribing to Tor circuit events...");
+        
+        // Send SETEVENTS command
+        let cmd = "SETEVENTS CIRC CIRC_MINOR\r\n";
+        stream.write_all(cmd.as_bytes()).await?;
+        stream.flush().await?;
+        
+        // Read response
+        let mut reader = BufReader::new(stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).await?;
+        
+        if !response.starts_with("250") {
+            anyhow::bail!("Failed to subscribe to events: {}", response);
+        }
+        
+        // Create broadcast channel for events
+        let (tx, rx) = broadcast::channel(1000);
+        self.event_tx = Some(tx);
+        
+        tracing::info!("Successfully subscribed to circuit events");
+        Ok(rx)
+    }
+
+    /// Start async event processing loop
+    pub async fn process_events(mut stream: TcpStream, tx: broadcast::Sender<CircuitEvent>) -> Result<()> {
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        
+        loop {
+            line.clear();
+            let n = reader.read_line(&mut line).await?;
+            if n == 0 {
+                // Connection closed
+                break;
+            }
+            
+            // Parse circuit events
+            if line.starts_with("650 CIRC") {
+                if let Some(event) = Self::parse_circuit_event(&line) {
+                    let _ = tx.send(event);
+                }
+            }
+        }
+        
         Ok(())
     }
 
-    /// Get circuit metadata
-    pub async fn get_circuit_metadata(&self, circuit_id: u32) -> Result<TorCircuitMetadata> {
-        // TODO: Implement GETINFO circuit-status
+    /// Parse circuit event from Tor control port response
+    fn parse_circuit_event(line: &str) -> Option<CircuitEvent> {
+        // Format: 650 CIRC <CircuitID> <Status> [<Path>] [<BuildFlags>] [<Purpose>] [<HSState>] [<RendQuery>] [<TimeCreated>] [<Reason>]
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 4 {
+            return None;
+        }
+        
+        let circuit_id: u32 = parts[2].parse().ok()?;
+        let status = parts[3];
+        
+        match status {
+            "LAUNCHED" => Some(CircuitEvent::Launched { circuit_id }),
+            "EXTENDED" => {
+                // Count hops in path
+                let path = parts.get(4)?;
+                let hop_count = path.split(',').count();
+                Some(CircuitEvent::Extended { circuit_id, hop_count })
+            },
+            "BUILT" => Some(CircuitEvent::Built { circuit_id }),
+            "FAILED" => {
+                let reason = parts.get(4).unwrap_or(&"unknown").to_string();
+                Some(CircuitEvent::Failed { circuit_id, reason })
+            },
+            "CLOSED" => {
+                let reason = parts.get(4).unwrap_or(&"done").to_string();
+                Some(CircuitEvent::Closed { circuit_id, reason })
+            },
+            _ => None,
+        }
+    }
+
+    /// Get circuit metadata using GETINFO
+    pub async fn get_circuit_metadata(&self, stream: &mut TcpStream, circuit_id: u32) -> Result<TorCircuitMetadata> {
+        // Send GETINFO circuit-status command
+        let cmd = format!("GETINFO circuit-status/{}\r\n", circuit_id);
+        stream.write_all(cmd.as_bytes()).await?;
+        stream.flush().await?;
+        
+        // Read response
+        let mut reader = BufReader::new(stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).await?;
+        
+        // Parse circuit info
+        // For now, return basic metadata
         Ok(TorCircuitMetadata {
             circuit_id,
             created_at: Instant::now(),
@@ -309,16 +425,24 @@ impl CircuitMonitor {
 
     /// Track or update a circuit
     pub fn track_circuit(&self, circuit: TorCircuitMetadata) {
-        // Evict oldest if at capacity
-        if self.circuits.len() >= self.max_circuits {
-            if let Some(entry) = self.circuits.iter().next() {
-                let id = *entry.key();
-                drop(entry);
+        let circuit_id = circuit.circuit_id;
+        
+        // Insert or update
+        self.circuits.insert(circuit_id, circuit);
+        
+        // Evict excess circuits if over capacity
+        while self.circuits.len() > self.max_circuits {
+            // Find a circuit to evict (not the one we just added)
+            let to_evict = self.circuits.iter()
+                .find(|entry| *entry.key() != circuit_id)
+                .map(|entry| *entry.key());
+            
+            if let Some(id) = to_evict {
                 self.circuits.remove(&id);
+            } else {
+                break; // Safety: avoid infinite loop
             }
         }
-
-        self.circuits.insert(circuit.circuit_id, circuit);
     }
 
     /// Get circuit by ID
@@ -393,7 +517,7 @@ mod tests {
 
     #[test]
     fn test_tor_interface_authentication() {
-        let mut interface = TorInterface::new(9051);
+        let interface = TorInterface::new(9051);
         assert!(!interface.is_authenticated());
         // Note: actual authentication requires async runtime
     }
@@ -474,5 +598,60 @@ mod tests {
         assert!(matches!(event1, CircuitEvent::Launched { .. }));
         assert!(matches!(event2, CircuitEvent::Built { .. }));
         assert!(matches!(event3, CircuitEvent::Failed { .. }));
+    }
+
+    #[test]
+    fn test_parse_circuit_event_launched() {
+        let line = "650 CIRC 123 LAUNCHED";
+        let event = TorInterface::parse_circuit_event(line);
+        assert!(event.is_some());
+        assert!(matches!(event.unwrap(), CircuitEvent::Launched { circuit_id: 123 }));
+    }
+
+    #[test]
+    fn test_parse_circuit_event_extended() {
+        let line = "650 CIRC 456 EXTENDED $A,$B,$C BUILD_FLAGS=NEED_CAPACITY";
+        let event = TorInterface::parse_circuit_event(line);
+        assert!(event.is_some());
+        if let Some(CircuitEvent::Extended { circuit_id, hop_count }) = event {
+            assert_eq!(circuit_id, 456);
+            assert_eq!(hop_count, 3);
+        } else {
+            panic!("Expected Extended event");
+        }
+    }
+
+    #[test]
+    fn test_parse_circuit_event_built() {
+        let line = "650 CIRC 789 BUILT";
+        let event = TorInterface::parse_circuit_event(line);
+        assert!(event.is_some());
+        assert!(matches!(event.unwrap(), CircuitEvent::Built { circuit_id: 789 }));
+    }
+
+    #[test]
+    fn test_parse_circuit_event_failed() {
+        let line = "650 CIRC 999 FAILED TIMEOUT";
+        let event = TorInterface::parse_circuit_event(line);
+        assert!(event.is_some());
+        if let Some(CircuitEvent::Failed { circuit_id, reason }) = event {
+            assert_eq!(circuit_id, 999);
+            assert_eq!(reason, "TIMEOUT");
+        } else {
+            panic!("Expected Failed event");
+        }
+    }
+
+    #[test]
+    fn test_parse_circuit_event_closed() {
+        let line = "650 CIRC 111 CLOSED FINISHED";
+        let event = TorInterface::parse_circuit_event(line);
+        assert!(event.is_some());
+        if let Some(CircuitEvent::Closed { circuit_id, reason }) = event {
+            assert_eq!(circuit_id, 111);
+            assert_eq!(reason, "FINISHED");
+        } else {
+            panic!("Expected Closed event");
+        }
     }
 }

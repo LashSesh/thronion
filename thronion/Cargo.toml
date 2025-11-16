@@ -39,6 +39,7 @@ lazy_static = "1.4"
 
 # Additional
 async-trait = "0.1"
+hex = "0.4"
 
 [dev-dependencies]
 criterion = "0.5"
