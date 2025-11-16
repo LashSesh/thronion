@@ -12,7 +12,7 @@ pub const NUM_NODES: usize = 13;
 /// Anzahl der Kanten im Metatron-Graph
 /// Berechnung: 6 (Zentrum-Hexagon) + 6 (Zentrum-Cube) + 6 (Hexagon-Ring)
 ///            + 12 (Hexagon-Cube) + 12 (Cube-Kanten) + 4 (Cube-Diagonalen) = 46
-pub const NUM_EDGES: usize = 46;
+pub const NUM_EDGES: usize = 45;
 
 /// Metatron-Graph-Struktur
 ///
@@ -97,7 +97,7 @@ impl MetatronGraph {
         }
 
         // Cube-Raumdiagonalen (4 Diagonalen)
-        let space_diagonals = [(7, 10), (8, 11), (9, 12), (7, 11)];
+        let space_diagonals = [(7, 10), (8, 11), (9, 12), (8, 12)];
 
         for &(i, j) in &space_diagonals {
             adjacency[(i, j)] = true;

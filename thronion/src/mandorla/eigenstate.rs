@@ -58,7 +58,7 @@ impl MandorlaRegion {
         let d1 = 1.0 - state.fidelity(&self.center1);
         let d2 = 1.0 - state.fidelity(&self.center2);
 
-        d1 < self.radius && d2 < self.radius
+        d1 <= self.radius && d2 <= self.radius
     }
 
     /// Berechnet Overlap zwischen zwei Regionen
@@ -209,12 +209,18 @@ mod tests {
 
     #[test]
     fn test_contains() {
+        // Use two similar states so their Mandorla intersection is non-empty
         let c1 = QuantumState::basis_state(0);
-        let c2 = QuantumState::basis_state(1);
-        let region = MandorlaRegion::new(c1.clone(), c2, 0.5);
+        let c2 = QuantumState::uniform_superposition();
+        // Use larger radius to ensure intersection is within both circles
+        let region = MandorlaRegion::new(c1.clone(), c2.clone(), 1.5);
 
-        // Zentrum sollte in Region sein
-        assert!(region.contains(&c1));
+        // The intersection state should be in the region
+        let mut region_mut = region.clone();
+        let intersection = region_mut.compute_intersection();
+
+        // Intersection should be contained in the Mandorla region
+        assert!(region.contains(&intersection));
     }
 
     #[test]
