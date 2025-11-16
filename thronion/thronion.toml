@@ -1,0 +1,61 @@
+# Thronion Configuration File
+# Quantum-Enhanced DDoS Protection for Tor Hidden Services
+
+[thronion]
+# Maximum number of Gabriel regions (hybrid classical-quantum patterns)
+max_regions = 100
+
+# Adaptive learning rate (exponential moving average)
+learning_rate = 0.1
+
+# Attack probability threshold (0.0 = benign, 1.0 = attack)
+attack_threshold = 0.5
+
+# Minimum resonance score to use region classification
+resonance_threshold = 0.3
+
+# Auto-optimize every N classifications
+optimization_interval = 100
+
+# Delta Kernel coherence stability threshold
+coherence_threshold = 0.05
+
+# Quantum fidelity threshold for region merging
+merge_threshold = 0.9
+
+[tor]
+# Tor control port
+control_port = 9051
+
+# Path to Tor control authentication cookie
+cookie_path = "/var/run/tor/control.authcookie"
+
+# Alternative: password authentication (leave commented for cookie auth)
+# control_password = "your_password_here"
+
+[service]
+# Bind address for service
+bind_address = "127.0.0.1"
+
+# Number of worker threads (0 = auto, uses number of CPUs)
+worker_threads = 4
+
+[monitoring]
+# Enable Prometheus metrics
+enable_metrics = true
+
+# Metrics HTTP endpoint port
+metrics_port = 9090
+
+# Verbose logging (debug output)
+verbose_logging = false
+
+# Log file path
+log_file = "/var/log/thronion/thronion.log"
+
+[performance]
+# Maximum tracked circuits (LRU eviction)
+max_tracked_circuits = 10000
+
+# Circuit metadata retention in seconds
+metadata_retention_secs = 3600
