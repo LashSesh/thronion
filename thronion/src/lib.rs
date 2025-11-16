@@ -61,9 +61,9 @@ pub mod utils;
 
 // Thronion-specific modules
 pub mod tor;
+pub mod thronion;
 
 // To be implemented in future phases
-// pub mod thronion;
 // pub mod service;
 
 /// Prelude for commonly used types
