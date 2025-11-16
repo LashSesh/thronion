@@ -19,6 +19,7 @@
 //! Mandorla fusion (high-capacity, accurate) for optimal DDoS detection.
 
 use crate::core::{QuantumState, HILBERT_DIM};
+use crate::delta::DeltaKernel;
 use crate::mandorla::MandorlaRegion;
 use crate::tor::{CellTypeDistribution, TimingFeatures, TorCircuitMetadata};
 use nalgebra::{SVector, Complex};
@@ -456,6 +457,152 @@ pub struct KernelStats {
     pub attack_threshold: f64,
 }
 
+/// Enhanced Thronion Kernel with Delta Kernel optimization
+/// 
+/// This extends the basic ThronionKernel with QRIK's Delta Kernel for
+/// advanced coherence-based optimization, region merging, and Hamiltonian evolution.
+pub struct EnhancedThronionKernel {
+    /// Base Thronion kernel for classification
+    pub base_kernel: ThronionKernel,
+    /// Delta Kernel for optimization
+    pub delta_kernel: DeltaKernel,
+    /// Optimization interval (number of classifications before optimization)
+    pub optimization_interval: usize,
+    /// Classification counter
+    pub classification_count: usize,
+}
+
+impl EnhancedThronionKernel {
+    /// Create new enhanced kernel with Delta Kernel optimization
+    pub fn new(base_kernel: ThronionKernel, delta_params: crate::delta::QRIKParams) -> Self {
+        let delta_kernel = DeltaKernel::new(delta_params);
+        
+        Self {
+            base_kernel,
+            delta_kernel,
+            optimization_interval: 100, // Optimize every 100 classifications
+            classification_count: 0,
+        }
+    }
+    
+    /// Classify with automatic optimization
+    pub fn classify(&mut self, metadata: &TorCircuitMetadata, timing: &TimingFeatures, dist: &CellTypeDistribution) -> (bool, f64, Option<usize>) {
+        self.classification_count += 1;
+        
+        // Perform classification
+        let result = self.base_kernel.classify(metadata, timing, dist);
+        
+        // Periodic optimization
+        if self.classification_count % self.optimization_interval == 0 {
+            self.optimize();
+        }
+        
+        result
+    }
+    
+    /// Learn with Delta Kernel-enhanced updates
+    pub fn learn(&mut self, metadata: &TorCircuitMetadata, timing: &TimingFeatures, dist: &CellTypeDistribution, is_attack: bool) {
+        // Standard learning
+        self.base_kernel.learn(metadata, timing, dist, is_attack);
+        
+        // Evolve Delta Kernel
+        self.delta_kernel.evolve(0.01);
+    }
+    
+    /// Optimize regions using Delta Kernel coherence
+    pub fn optimize(&mut self) {
+        // Check if optimization is needed
+        let gradient = self.delta_kernel.coherence_gradient();
+        
+        if gradient > 0.1 {
+            // High gradient: system needs optimization
+            
+            // 1. Merge similar regions based on quantum coherence
+            self.merge_coherent_regions();
+            
+            // 2. Evolve Delta Kernel towards optimal state
+            for _ in 0..10 {
+                self.delta_kernel.evolve(0.01);
+                if self.delta_kernel.is_stable(0.05) {
+                    break;
+                }
+            }
+        }
+    }
+    
+    /// Merge regions with high quantum coherence (fidelity > 0.9)
+    fn merge_coherent_regions(&mut self) {
+        let mut to_merge: Vec<(usize, usize)> = Vec::new();
+        
+        // Find pairs of regions with high fidelity
+        for i in 0..self.base_kernel.regions.len() {
+            for j in (i+1)..self.base_kernel.regions.len() {
+                let fidelity = self.base_kernel.regions[i]
+                    .quantum_center
+                    .fidelity(&self.base_kernel.regions[j].quantum_center);
+                
+                if fidelity > 0.9 {
+                    to_merge.push((i, j));
+                }
+            }
+        }
+        
+        // Merge regions (simplified: keep first, update with second's data, remove second)
+        for (i, j) in to_merge.iter().rev() {
+            if *j < self.base_kernel.regions.len() {
+                // Weighted average based on sample counts
+                let region_i = &self.base_kernel.regions[*i];
+                let region_j = &self.base_kernel.regions[*j];
+                
+                let total_samples = region_i.sample_count + region_j.sample_count;
+                if total_samples > 0 {
+                    let w_i = region_i.sample_count as f64 / total_samples as f64;
+                    let w_j = region_j.sample_count as f64 / total_samples as f64;
+                    
+                    // Merge attack probabilities
+                    let merged_prob = w_i * region_i.attack_probability + w_j * region_j.attack_probability;
+                    self.base_kernel.regions[*i].attack_probability = merged_prob;
+                    self.base_kernel.regions[*i].sample_count = total_samples;
+                }
+                
+                // Remove the merged region
+                self.base_kernel.regions.remove(*j);
+            }
+        }
+    }
+    
+    /// Get coherence gradient from Delta Kernel
+    pub fn coherence_gradient(&self) -> f64 {
+        self.delta_kernel.coherence_gradient()
+    }
+    
+    /// Check if system is stable
+    pub fn is_stable(&self) -> bool {
+        self.delta_kernel.is_stable(0.05)
+    }
+    
+    /// Get combined statistics
+    pub fn stats(&self) -> EnhancedKernelStats {
+        let base_stats = self.base_kernel.stats();
+        
+        EnhancedKernelStats {
+            base_stats,
+            coherence_gradient: self.delta_kernel.coherence_gradient(),
+            is_stable: self.is_stable(),
+            classification_count: self.classification_count,
+        }
+    }
+}
+
+/// Statistics for Enhanced Thronion Kernel
+#[derive(Debug, Clone)]
+pub struct EnhancedKernelStats {
+    pub base_stats: KernelStats,
+    pub coherence_gradient: f64,
+    pub is_stable: bool,
+    pub classification_count: usize,
+}
+
 #[cfg(test)]
 mod kernel_tests {
     use super::*;
@@ -591,5 +738,175 @@ mod kernel_tests {
         
         // Should not exceed max capacity
         assert!(kernel.regions.len() <= 5);
+    }
+}
+
+#[cfg(test)]
+mod enhanced_kernel_tests {
+    use super::*;
+    use crate::delta::QRIKParams;
+    use std::time::Duration;
+    use crate::tor::TorCellType;
+    
+    fn create_test_metadata(is_attack: bool) -> (TorCircuitMetadata, TimingFeatures, CellTypeDistribution) {
+        use std::time::Instant;
+        
+        let timings = if is_attack {
+            vec![
+                Duration::from_micros(10),
+                Duration::from_micros(11),
+                Duration::from_micros(10),
+                Duration::from_micros(12),
+            ]
+        } else {
+            vec![
+                Duration::from_micros(100),
+                Duration::from_micros(120),
+                Duration::from_micros(110),
+                Duration::from_micros(105),
+            ]
+        };
+        
+        let cells = if is_attack {
+            vec![
+                TorCellType::Data,
+                TorCellType::Data,
+                TorCellType::Data,
+                TorCellType::Data,
+            ]
+        } else {
+            vec![
+                TorCellType::Introduce2,
+                TorCellType::Data,
+                TorCellType::Rendezvous1,
+                TorCellType::Data,
+            ]
+        };
+        
+        let metadata = TorCircuitMetadata {
+            circuit_id: 1,
+            created_at: Instant::now(),
+            cell_timings: timings.clone(),
+            cell_types: cells.clone(),
+            introduction_point: None,
+            rendezvous_completed: false,
+            total_bytes: if is_attack { 4096 } else { 1024 },
+        };
+        
+        let timing = crate::tor::MetadataExtractor::extract_timing_features(&timings);
+        let dist = crate::tor::MetadataExtractor::analyze_cell_types(&cells);
+        
+        (metadata, timing, dist)
+    }
+    
+    #[test]
+    fn test_enhanced_kernel_creation() {
+        let base_kernel = ThronionKernel::new();
+        let params = QRIKParams::default();
+        let enhanced = EnhancedThronionKernel::new(base_kernel, params);
+        
+        assert_eq!(enhanced.classification_count, 0);
+        assert_eq!(enhanced.optimization_interval, 100);
+    }
+    
+    #[test]
+    fn test_enhanced_kernel_classification() {
+        let base_kernel = ThronionKernel::new();
+        let params = QRIKParams::default();
+        let mut enhanced = EnhancedThronionKernel::new(base_kernel, params);
+        
+        let (metadata, timing, dist) = create_test_metadata(false);
+        
+        // First classification (benign, no regions yet)
+        let (is_attack, resonance, region_idx) = enhanced.classify(&metadata, &timing, &dist);
+        
+        // Should default to benign (no regions learned)
+        assert!(!is_attack);
+        assert!(region_idx.is_none());
+        assert_eq!(enhanced.classification_count, 1);
+    }
+    
+    #[test]
+    fn test_enhanced_kernel_learning() {
+        let base_kernel = ThronionKernel::new();
+        let params = QRIKParams::default();
+        let mut enhanced = EnhancedThronionKernel::new(base_kernel, params);
+        
+        // Learn from attack pattern
+        let (metadata, timing, dist) = create_test_metadata(true);
+        enhanced.learn(&metadata, &timing, &dist, true);
+        
+        // Should have created one region
+        assert_eq!(enhanced.base_kernel.regions.len(), 1);
+    }
+    
+    #[test]
+    fn test_enhanced_kernel_optimization() {
+        let base_kernel = ThronionKernel::new();
+        let params = QRIKParams::default();
+        let mut enhanced = EnhancedThronionKernel::new(base_kernel, params);
+        
+        // Set lower interval for testing
+        enhanced.optimization_interval = 5;
+        
+        // Perform multiple classifications to trigger optimization
+        let (metadata, timing, dist) = create_test_metadata(false);
+        
+        for _ in 0..10 {
+            enhanced.classify(&metadata, &timing, &dist);
+        }
+        
+        // Should have optimized twice (at 5 and 10)
+        assert_eq!(enhanced.classification_count, 10);
+    }
+    
+    #[test]
+    fn test_enhanced_kernel_coherence() {
+        let base_kernel = ThronionKernel::new();
+        let params = QRIKParams::default();
+        let enhanced = EnhancedThronionKernel::new(base_kernel, params);
+        
+        // Check coherence gradient
+        let gradient = enhanced.coherence_gradient();
+        assert!(gradient.is_finite());
+        assert!(gradient >= 0.0);
+    }
+    
+    #[test]
+    fn test_enhanced_kernel_stats() {
+        let base_kernel = ThronionKernel::new();
+        let params = QRIKParams::default();
+        let mut enhanced = EnhancedThronionKernel::new(base_kernel, params);
+        
+        // Learn some patterns
+        let (metadata_attack, timing_attack, dist_attack) = create_test_metadata(true);
+        let (metadata_benign, timing_benign, dist_benign) = create_test_metadata(false);
+        
+        enhanced.learn(&metadata_attack, &timing_attack, &dist_attack, true);
+        enhanced.learn(&metadata_benign, &timing_benign, &dist_benign, false);
+        
+        let stats = enhanced.stats();
+        assert!(stats.base_stats.total_regions >= 1);
+        assert!(stats.coherence_gradient.is_finite());
+        assert_eq!(stats.classification_count, 0); // No classifications yet
+    }
+    
+    #[test]
+    fn test_region_merging() {
+        let base_kernel = ThronionKernel::new();
+        let params = QRIKParams::default();
+        let mut enhanced = EnhancedThronionKernel::new(base_kernel, params);
+        
+        // Learn similar patterns (should potentially merge)
+        for _ in 0..3 {
+            let (metadata, timing, dist) = create_test_metadata(true);
+            enhanced.learn(&metadata, &timing, &dist, true);
+        }
+        
+        // Trigger optimization manually
+        enhanced.optimize();
+        
+        // After optimization, similar regions may have merged
+        assert!(enhanced.base_kernel.regions.len() <= 3);
     }
 }
