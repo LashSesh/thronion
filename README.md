@@ -2,7 +2,7 @@
 
 **Quantum-Enhanced DDoS Protection for Tor Hidden Services**
 
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](https://www.rust-lang.org/)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)]()
 [![Tests](https://img.shields.io/badge/tests-156%20passing-brightgreen.svg)]()
@@ -12,10 +12,7 @@
 
 ## 🎯 Project Overview
 
-**Thronion** is a next-generation DDoS protection system for Tor Hidden Services, combining proven operational capabilities with cutting-edge quantum-inspired algorithms. It represents the successful fusion of:
-
-- **Ophanion**: Production-ready DDoS protection with proven Tor integration
-- **QRADIANCE (QRIK)**: Advanced quantum-inspired cybersecurity framework
+**Thronion** is a next-generation DDoS protection system for Tor Hidden Services, combining proven operational capabilities with cutting-edge quantum-inspired algorithms.
 
 ### What Makes Thronion Unique?
 
@@ -83,24 +80,6 @@ Thronion doesn't just detect attacks—it understands them through multiple para
    - Mathematical foundations
    - Security model
    - Performance optimization
-
-4. **[IMPLEMENTATION_ROADMAP.md](IMPLEMENTATION_ROADMAP.md)** (95 pages)
-   - 12-week implementation plan
-   - Phase-by-phase breakdown with tasks
-   - Testing strategy (unit, integration, performance)
-   - Dependency management
-   - Deployment and rollout plan
-
-### Source Repositories
-
-The analysis is based on two source repositories (included as ZIP files):
-
-- **ophanion-main.zip**: Original Ophanion DDoS protection system
-- **QRADIANCE-main.zip**: QRIK quantum-inspired framework
-
-Both have been extracted and analyzed in the `ophanion-main/` and `QRADIANCE-main/` directories.
-
----
 
 ## 🚀 Key Innovations
 
@@ -378,26 +357,11 @@ See **[INSTALL.md](INSTALL.md)** for detailed setup instructions and **[USAGE.md
 
 ---
 
-## 🤝 Contributing
-
-This project is currently in Phase 1 (Foundation). Contributions are welcome in:
-
-- Core implementation (Rust)
-- Testing (unit, integration, performance)
-- Documentation improvements
-- Security audits
-- Performance optimization
-
----
-
 ## 📜 License
 
-This project is dual-licensed under:
+This project is licensed under:
 
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 - Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-
-at your option.
 
 ---
 
@@ -498,7 +462,7 @@ Potential areas for future development:
 | **Performance** | <100ms latency |
 | **Detection Rate** | ≥97% (design target met) |
 | **False Positive Rate** | <0.05% (design target met) |
-| **License** | MIT OR Apache-2.0 (dual) |
+| **License** | Apache-2.0 |
 
 ---
 
@@ -523,6 +487,6 @@ Potential areas for future development:
 
 ---
 
-*"Resonance • Invariance • Protection"*
+# "Resonance • Invariance • Protection"
 
-*"We're taking back the holy land!"*
+**"We're taking back the holy land!"**
