@@ -12,7 +12,7 @@
 
 ## 🎯 Project Overview
 
-**Thronion** is a next-generation DDoS protection system for Tor Hidden Services, combining proven operational capabilities with cutting-edge quantum-inspired algorithms.
+**Thronion** is a next-generation DDoS protection system for Darknet Services, combining proven operational capabilities with cutting-edge quantum-inspired algorithms.
 
 ### What Makes Thronion Unique?
 
